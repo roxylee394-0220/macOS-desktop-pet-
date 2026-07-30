@@ -4,7 +4,7 @@ A transparent, always-on-top macOS desktop pet built with Electron, Vite,
 Three.js, and `@pixiv/three-vrm`.
 
 This public repository does not include a default VRM model or VRMA animation
-files. Users import files they have permission to use from inside the App.
+files. Users import their own files inside the App.
 
 ## Features
 
