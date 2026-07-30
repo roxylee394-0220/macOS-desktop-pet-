@@ -1,0 +1,41 @@
+{
+  "name": "vrm-desktop-pet",
+  "version": "3.0.2",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "ELECTRON_RUN_AS_NODE=1 ./node_modules/electron/dist/Electron.app/Contents/MacOS/Electron scripts/dev.mjs",
+    "dev:web": "vite",
+    "build": "node node_modules/vite/bin/vite.js build",
+    "preview": "vite preview",
+    "package:mac": "npm run build && node scripts/package-mac.mjs",
+    "package:local": "npm run build && node scripts/package-mac.mjs --local"
+  },
+  "dependencies": {
+    "@pixiv/three-vrm": "^3.4.2",
+    "@pixiv/three-vrm-animation": "^3.5.5",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "electron": "^37.3.1",
+    "electron-builder": "^26.15.3",
+    "vite": "^8.1.1",
+    "wait-on": "^8.0.4"
+  },
+  "build": {
+    "appId": "app.vrmdesktoppet.desktop",
+    "productName": "macOS desktop pet 3.0.2",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.entertainment",
+      "target": "dir"
+    }
+  }
+}
