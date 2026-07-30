@@ -1,0 +1,244 @@
+:root {
+  background: transparent;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+
+canvas {
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+
+canvas:active {
+  cursor: grabbing;
+}
+
+.asset-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  color: #243447;
+  font: 13px -apple-system, BlinkMacSystemFont, sans-serif;
+  text-align: center;
+  -webkit-app-region: drag;
+}
+
+.asset-panel.pending {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.asset-panel.hidden {
+  display: none;
+}
+
+.asset-panel.built-in [data-asset-operation],
+.asset-panel.built-in [data-asset-management],
+.asset-panel:not(.has-imported-assets) [data-asset-management] {
+  display: none;
+}
+
+.asset-panel button,
+.asset-panel select,
+.asset-panel input[type="text"] {
+  min-width: 132px;
+  padding: 8px 12px;
+  border: 1px solid rgb(62 103 146 / 35%);
+  border-radius: 9px;
+  color: #244d73;
+  background: rgb(255 255 255 / 88%);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 10%);
+  font: inherit;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.pet-manager {
+  display: flex;
+  width: min(360px, calc(100vw - 20px));
+  max-height: min(460px, calc(100vh - 20px));
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid rgb(62 103 146 / 25%);
+  border-radius: 12px;
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 14%);
+  -webkit-app-region: no-drag;
+}
+
+.pet-manager-title,
+.pet-manager-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.pet-manager-title {
+  font-weight: 600;
+}
+
+.pet-manager-title [data-role="group-mode"] {
+  color: #55738f;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.pet-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pet-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+}
+
+.pet-row.current {
+  padding: 5px;
+  border-radius: 8px;
+  background: rgb(78 132 183 / 10%);
+}
+
+.pet-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  -webkit-app-region: no-drag;
+}
+
+.pet-row input[type="text"] {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 7px;
+}
+
+.pet-row select[data-pet-size] {
+  width: 66px;
+  min-width: 66px;
+  padding: 4px 3px;
+  font-size: 10px;
+  -webkit-app-region: no-drag;
+}
+
+.pet-row select[data-pet-dance-mode] {
+  width: 62px;
+  min-width: 62px;
+  padding: 4px 3px;
+  font-size: 10px;
+  -webkit-app-region: no-drag;
+}
+
+.pet-row-settings {
+  display: flex;
+  grid-column: 2 / -1;
+  gap: 5px;
+}
+
+.pet-row select[data-pet-roaming] {
+  width: 62px;
+  min-width: 62px;
+  padding: 4px 3px;
+  font-size: 10px;
+  -webkit-app-region: no-drag;
+}
+
+.pet-status {
+  color: #7a8792;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.pet-status.running {
+  color: #287a4b;
+}
+
+.pet-manager-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.pet-manager-actions button {
+  min-width: 0;
+  padding: 5px 7px;
+  font-size: 10px;
+}
+
+.asset-panel select {
+  max-width: 260px;
+}
+
+.asset-panel [data-action="delete-one"],
+.asset-panel [data-action="reset"] {
+  color: #8b2f2f;
+  border-color: rgb(150 55 55 / 35%);
+}
+
+.asset-panel.compact {
+  inset: 10px 10px auto auto;
+  align-items: flex-end;
+  padding: 0;
+  opacity: 0.15;
+  transition: opacity 150ms ease;
+}
+
+.asset-panel.compact:hover,
+.asset-panel.compact:focus-within {
+  opacity: 1;
+}
+
+.asset-panel.compact .asset-message {
+  display: none;
+}
+
+.asset-panel.compact.has-status .asset-message {
+  display: block;
+  max-width: 260px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 88%);
+  color: #8b3a24;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 10%);
+}
+
+.asset-panel.compact button,
+.asset-panel.compact select,
+.asset-panel.compact input[type="text"] {
+  min-width: 0;
+  max-width: 220px;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
+.asset-panel button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
