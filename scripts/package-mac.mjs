@@ -10,9 +10,9 @@ const isLocalBuild = process.argv.includes('--local')
 const outputArgument = process.argv.slice(2).find((argument) => argument !== '--local')
 const finalOutputApp = outputArgument
   ? resolve(outputArgument)
-  : resolve(releaseDirectory, isLocalBuild ? 'macOS desktop pet 3.0.2.app' : 'macOS desktop pet 3.0.2.app')
+  : resolve(releaseDirectory, 'macOS desktop pet 3.0.5.app')
 const stagingDirectory = mkdtempSync(resolve(tmpdir(), 'vrm-desktop-pet-package-'))
-const outputApp = resolve(stagingDirectory, 'macOS desktop pet 3.0.2.app')
+const outputApp = resolve(stagingDirectory, 'macOS desktop pet 3.0.5.app')
 const contents = resolve(outputApp, 'Contents')
 const resources = resolve(contents, 'Resources')
 const bundledApp = resolve(resources, 'app')
@@ -33,16 +33,19 @@ renameSync(
 
 execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Set :CFBundleExecutable macOS desktop pet', plist])
 execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Set :CFBundleIdentifier app.vrmdesktoppet.desktop', plist])
-execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Set :CFBundleName macOS desktop pet 3.0.2', plist])
-execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Set :CFBundleDisplayName macOS desktop pet 3.0.2', plist])
-execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Set :CFBundleShortVersionString 3.0.2', plist])
-execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Set :CFBundleVersion 6', plist])
+execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Set :CFBundleName macOS desktop pet 3.0.5', plist])
+execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Set :CFBundleDisplayName macOS desktop pet 3.0.5', plist])
+execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Set :CFBundleShortVersionString 3.0.5', plist])
+execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Set :CFBundleVersion 5', plist])
 execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Set :LSApplicationCategoryType public.app-category.entertainment', plist])
 for (const key of ['NSBluetoothAlwaysUsageDescription', 'NSBluetoothPeripheralUsageDescription', 'NSCameraUsageDescription', 'NSAppTransportSecurity']) {
   try { execFileSync('/usr/libexec/PlistBuddy', ['-c', `Delete :${key}`, plist]) } catch {}
 }
 try {
   execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Add :NSAppleEventsUsageDescription string VRM Desktop Pet reads whether Spotify is playing so it can switch between idle and dance.', plist])
+} catch {}
+try {
+  execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Add :NSAudioCaptureUsageDescription string VRM Desktop Pet analyzes system audio locally to synchronize dance motion with music.', plist])
 } catch {}
 
 mkdirSync(bundledApp, { recursive: true })
@@ -55,8 +58,8 @@ rmSync(resolve(bundledApp, 'dist/.DS_Store'), { force: true })
 cpSync(resolve(projectRoot, 'electron'), resolve(bundledApp, 'electron'), { recursive: true })
 writeFileSync(resolve(bundledApp, 'package.json'), JSON.stringify({
   name: 'vrm-desktop-pet',
-  productName: 'macOS desktop pet 3.0.2',
-  version: '3.0.2',
+  productName: 'macOS desktop pet 3.0.5',
+  version: '3.0.5',
   private: true,
   type: 'module',
   main: 'electron/main.js',
