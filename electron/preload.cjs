@@ -74,6 +74,19 @@ contextBridge.exposeInMainWorld('desktopPet', {
     ipcRenderer.on('spotify-playback-state', listener)
     return () => ipcRenderer.removeListener('spotify-playback-state', listener)
   },
+  onMusicPlayerStatusChanged(callback) {
+    const listener = (_event, status) => callback(status)
+    ipcRenderer.on('music-player-status', listener)
+    return () => ipcRenderer.removeListener('music-player-status', listener)
+  },
+  publishMusicAnalysis(analysis) {
+    ipcRenderer.send('pet-music-analysis', analysis)
+  },
+  onMusicAnalysis(callback) {
+    const listener = (_event, analysis) => callback(analysis)
+    ipcRenderer.on('music-analysis', listener)
+    return () => ipcRenderer.removeListener('music-analysis', listener)
+  },
   beginDrag(screenX, screenY) {
     return ipcRenderer.sendSync('pet-drag-start', { screenX, screenY })
   },
