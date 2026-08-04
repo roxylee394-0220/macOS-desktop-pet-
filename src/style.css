@@ -101,12 +101,21 @@ canvas:active {
 
 .pet-manager-title {
   font-weight: 600;
+  padding: 4px 3px 7px;
+  cursor: move;
+  -webkit-app-region: drag;
 }
 
 .pet-manager-title [data-role="group-mode"] {
   color: #55738f;
   font-size: 11px;
   font-weight: 500;
+}
+
+.music-status {
+  color: #55738f;
+  font-size: 11px;
+  text-align: left;
 }
 
 .pet-list {
