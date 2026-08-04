@@ -59,6 +59,7 @@ let petManagerState = null
 let petDanceMode = 'solo'
 let groupLeaderPetId = null
 let groupCommonDanceKeys = []
+let audioLeaderPetId = null
 let pendingGroupDanceTimer = null
 let isRoaming = false
 let roamDirection = 1
@@ -76,6 +77,8 @@ let interactionPulse = 0
 let interactionVariant = 0
 let visibleModelBounds = null
 let spotifyIsPlaying = false
+let musicPlayerCandidate = false
+let musicPlayerName = 'Spotify'
 let systemAudioStream = null
 let systemAudioContext = null
 let systemAudioSource = null
@@ -90,8 +93,16 @@ let bassBaseline = 0
 let beatPulse = 0
 let lastDetectedBeatAt = -Infinity
 let lastDetectedBpmLogAt = -Infinity
+let musicEnergyStartedAt = -Infinity
+let musicSilenceStartedAt = -Infinity
+let detectedMusicPlaying = false
+let lastMusicAnalysisSentAt = -Infinity
+let musicBeatSerial = 0
+let receivedMusicBeatSerial = 0
 const detectedBeatBpms = []
 const IDLE_POSES = ['neutral']
+const IDLE_VARIANTS = ['calm', 'curious', 'weight-shift', 'small-stretch', 'look-down']
+let idleVariant = 'calm'
 
 const DANCE_CONFIG = {
   bpm: 116,
@@ -207,12 +218,15 @@ function configureImportedMotions(animations) {
       removeHeadTracks: animation.removeHeadTracks ?? preset.removeHeadTracks,
       lockHorizontalRoot: animation.lockHorizontalRoot ?? preset.lockHorizontalRoot,
       lockRoot: animation.lockRoot ?? preset.lockRoot,
+      autoIdle: animation.autoIdle ?? true,
       clickInteraction,
     }
   })
   DANCE_INDICES = VRMA_MOTIONS.map((motion, index) => motion.role === 'dance' ? index : -1).filter((index) => index >= 0)
   danceShuffleBag = []
-  IDLE_INDICES = VRMA_MOTIONS.map((motion, index) => motion.role === 'idle' ? index : -1).filter((index) => index >= 0)
+  IDLE_INDICES = VRMA_MOTIONS
+    .map((motion, index) => motion.role === 'idle' && motion.autoIdle ? index : -1)
+    .filter((index) => index >= 0)
   SIT_INDICES = VRMA_MOTIONS.map((motion, index) => motion.role === 'sit' ? index : -1).filter((index) => index >= 0)
   SLEEP_INDICES = VRMA_MOTIONS.map((motion, index) => motion.role === 'sleep' ? index : -1).filter((index) => index >= 0)
   const walkIndices = VRMA_MOTIONS.map((motion, index) => motion.role === 'walk' ? index : -1).filter((index) => index >= 0)
@@ -239,6 +253,9 @@ function selectVrmaMotion(index, fadeSeconds = VRMA_CROSSFADE_SECONDS, role = nu
   if (!nextAction) return
   const effectiveRole = role ?? VRMA_MOTIONS[index].role ?? 'dance'
   const repeats = ['dance', 'idle', 'walk', 'drag', 'sit', 'sleep'].includes(effectiveRole)
+  const motionName = VRMA_MOTIONS[index].name.toLowerCase()
+  const pingPongIdle = effectiveRole === 'idle'
+    && (motionName.includes('look around') || motionName.includes('weight shift'))
 
   if (currentVrmaAction && currentVrmaAction !== nextAction) {
     currentVrmaAction.stopFading().setEffectiveWeight(1)
@@ -246,7 +263,10 @@ function selectVrmaMotion(index, fadeSeconds = VRMA_CROSSFADE_SECONDS, role = nu
   nextAction
     .stopFading()
     .reset()
-    .setLoop(repeats ? THREE.LoopRepeat : THREE.LoopOnce, repeats ? Infinity : 1)
+    .setLoop(
+      pingPongIdle ? THREE.LoopPingPong : (repeats ? THREE.LoopRepeat : THREE.LoopOnce),
+      repeats ? Infinity : 1,
+    )
     .setEffectiveWeight(1)
     .play()
   if (currentVrmaAction && currentVrmaAction !== nextAction) {
@@ -284,9 +304,17 @@ function selectIdleMotion(fadeSeconds = 0.65) {
 
 function setIdlePose(pose, fadeSeconds = 0.7) {
   idlePose = IDLE_POSES.includes(pose) ? pose : 'neutral'
+  const idleChoices = IDLE_VARIANTS.filter((variant) => variant !== idleVariant)
+  idleVariant = idleChoices[Math.floor(Math.random() * idleChoices.length)] ?? 'calm'
   stopRoaming(false)
   const choices = availableMotionIndices(IDLE_INDICES)
   if (choices.length) {
+    if (currentMotionRole === 'idle' && choices.length === 1 && currentVrmaIndex === choices[0] && currentVrmaAction) {
+      nextIdlePoseAt = animationElapsed + 18 + Math.random() * 12
+      nextRoamAt = animationElapsed + 6 + Math.random() * 8
+      console.log(`Idle pose: ${idlePose} (${idleVariant})`)
+      return
+    }
     const candidates = choices.filter((index) => index !== currentVrmaIndex)
     const pool = candidates.length ? candidates : choices
     selectVrmaMotion(pool[Math.floor(Math.random() * pool.length)], fadeSeconds, 'idle')
@@ -295,7 +323,7 @@ function setIdlePose(pose, fadeSeconds = 0.7) {
   }
   nextIdlePoseAt = animationElapsed + 18 + Math.random() * 12
   nextRoamAt = animationElapsed + 6 + Math.random() * 8
-  console.log(`Idle pose: ${idlePose}`)
+  console.log(`Idle pose: ${idlePose} (${idleVariant})`)
 }
 
 function useProceduralMotion(role, fadeSeconds = 0.15) {
@@ -373,6 +401,14 @@ function selectAutomaticDance(elapsed) {
     || (musicDanceMuted && petDanceMode !== 'group')
     || manualDanceOverride
     || elapsed < nextAutoDanceSelectionAt
+  ) return
+  // Once music timing is available, change choreography on a detected beat
+  // instead of cutting to the next clip between beats.
+  if (
+    currentVrmaAction
+    && currentMotionRole === 'dance'
+    && (systemAudioAnalyser || receivedMusicBeatSerial > 0)
+    && beatPulse < 0.75
   ) return
   let loadedDances = availableMotionIndices(DANCE_INDICES)
   if (petDanceMode === 'group') {
@@ -589,8 +625,34 @@ async function loadVrmaMotions(targetVrm, onProgress = () => {}) {
   return { loadedCount: loadedMotionIndices.size, failures }
 }
 
-window.desktopPet?.onSpotifyPlaybackChanged((state) => {
-  spotifyIsPlaying = state === 'playing'
+function updateMusicStatusLabel(message) {
+  const status = assetPanel.querySelector('[data-role="music-status"]')
+  if (status) status.textContent = message
+}
+
+function scheduleSystemAudioAnalysis() {
+  if (
+    currentPetId !== audioLeaderPetId
+    || systemAudioAnalyser
+    || systemAudioStarting
+    || systemAudioStartTimer !== null
+    || musicDanceMuted
+  ) return
+  systemAudioStartTimer = window.setTimeout(() => {
+    systemAudioStartTimer = null
+    if (currentPetId === audioLeaderPetId && (spotifyIsPlaying || musicPlayerCandidate)) {
+      startSystemAudioAnalysis(true)
+    }
+  }, 700)
+}
+
+function setMusicPlaying(playing, source = musicPlayerName) {
+  const changed = spotifyIsPlaying !== playing
+  spotifyIsPlaying = playing
+  if (!changed) {
+    if (playing || musicPlayerCandidate) scheduleSystemAudioAnalysis()
+    return
+  }
   if (spotifyIsPlaying && petDanceMode !== 'off' && !musicDanceMuted) {
     manualDanceOverride = false
     isDancing = true
@@ -599,18 +661,7 @@ window.desktopPet?.onSpotifyPlaybackChanged((state) => {
     danceShuffleBag = []
     nextAutoDanceSelectionAt = 0
     selectAutomaticDance(animationElapsed)
-    if (!systemAudioAnalyser && !systemAudioStarting && systemAudioStartTimer === null) {
-      // Let the idle-to-dance crossfade settle before macOS starts the more
-      // expensive screen-audio capture session.
-      systemAudioStartTimer = window.setTimeout(() => {
-        systemAudioStartTimer = null
-        if (
-          spotifyIsPlaying
-          && !musicDanceMuted
-          && (petDanceMode === 'solo' || currentPetId === groupLeaderPetId)
-        ) startSystemAudioAnalysis(true)
-      }, 1200)
-    }
+    scheduleSystemAudioAnalysis()
   } else if (!manualDanceOverride) {
     if (systemAudioStartTimer !== null) {
       clearTimeout(systemAudioStartTimer)
@@ -624,17 +675,54 @@ window.desktopPet?.onSpotifyPlaybackChanged((state) => {
     beatPulse = 0
     lastDetectedBeatAt = -Infinity
     detectedBeatBpms.length = 0
+    receivedMusicBeatSerial = 0
   }
-  systemAudioStream?.getAudioTracks().forEach((track) => {
-    track.enabled = spotifyIsPlaying
-  })
+  systemAudioStream?.getAudioTracks().forEach((track) => { track.enabled = spotifyIsPlaying || musicPlayerCandidate })
   if (systemAudioContext) {
-    const contextAction = spotifyIsPlaying
+    const contextAction = (spotifyIsPlaying || musicPlayerCandidate) && !musicDanceMuted
       ? systemAudioContext.resume()
       : systemAudioContext.suspend()
     contextAction.catch((error) => console.error('Could not update audio analysis state:', error))
   }
-  console.log(`Spotify ${state}; dance ${isDancing ? 'enabled' : 'idle'}`)
+  if (changed) console.log(`${source} ${playing ? 'playing' : 'paused'}; dance ${isDancing ? 'enabled' : 'idle'}`)
+}
+
+window.desktopPet?.onSpotifyPlaybackChanged((state) => {
+  if (state === 'playing') setMusicPlaying(true, 'Spotify')
+  else if (!musicPlayerCandidate) setMusicPlaying(false, 'Spotify')
+})
+
+window.desktopPet?.onMusicPlayerStatusChanged?.((status) => {
+  if (!status || typeof status !== 'object') return
+  musicPlayerName = status.player || '音乐播放器'
+  musicPlayerCandidate = status.state === 'candidate'
+  if (status.state === 'playing') {
+    updateMusicStatusLabel(`${musicPlayerName}：正在播放`)
+    setMusicPlaying(true, musicPlayerName)
+  } else if (musicPlayerCandidate) {
+    updateMusicStatusLabel(status.fallback === 'system-audio'
+      ? `${musicPlayerName}：自动化读取失败，正在通过系统音频检测`
+      : `${musicPlayerName}：正在检测系统音频`)
+    scheduleSystemAudioAnalysis()
+  } else {
+    const message = status.state === 'permission-denied'
+      ? 'Spotify：需要“自动化”权限'
+      : `${musicPlayerName}：未播放`
+    updateMusicStatusLabel(message)
+    setMusicPlaying(false, musicPlayerName)
+  }
+})
+
+window.desktopPet?.onMusicAnalysis?.((analysis) => {
+  if (!analysis || analysis.sourcePetId === currentPetId) return
+  targetBpm = THREE.MathUtils.clamp(analysis.bpm ?? DANCE_CONFIG.bpm, 60, 180)
+  audioMotionBoost = THREE.MathUtils.clamp(analysis.boost ?? 1, 1, 2)
+  if (analysis.beat !== receivedMusicBeatSerial) {
+    receivedMusicBeatSerial = analysis.beat
+    beatPulse = 1
+    danceBeat = Math.round(danceBeat / (Math.PI * 2)) * Math.PI * 2
+  }
+  if (musicPlayerCandidate) setMusicPlaying(analysis.playing === true, musicPlayerName)
 })
 
 async function startSystemAudioAnalysis(automatic = false) {
@@ -654,6 +742,7 @@ async function startSystemAudioAnalysis(automatic = false) {
       systemAudioStream.getTracks().forEach((track) => track.stop())
       systemAudioStream = null
       console.warn('System audio capture started without an audio track.')
+      updateMusicStatusLabel(`${musicPlayerName}：未获得系统音频`)
       return
     }
 
@@ -668,7 +757,7 @@ async function startSystemAudioAnalysis(automatic = false) {
     systemAudioSource.connect(systemAudioAnalyser)
     audioTracks[0].enabled = true
     audioTracks[0].addEventListener('ended', () => {
-      console.warn('System audio track ended; press M to enable it again.')
+      console.warn('System audio track ended; restart audio playback or check the system-audio permission.')
       systemAudioAnalyser = null
       systemAudioData = null
       audioMotionBoost = 1
@@ -676,11 +765,26 @@ async function startSystemAudioAnalysis(automatic = false) {
     localStorage.setItem('systemAudioAnalysisEnabled', 'true')
     console.log('System audio analysis enabled.')
   } catch (error) {
-    const hint = automatic ? ' Click the pet and press M to enable it manually.' : ''
+    const hint = automatic ? ' Check the macOS system-audio permission and restart the app.' : ''
     console.error(`System audio analysis could not start.${hint}`, error)
+    updateMusicStatusLabel(`${musicPlayerName}：系统音频未启用`)
   } finally {
     systemAudioStarting = false
   }
+}
+
+function stopSystemAudioAnalysis() {
+  if (systemAudioStartTimer !== null) clearTimeout(systemAudioStartTimer)
+  systemAudioStartTimer = null
+  systemAudioStream?.getTracks().forEach((track) => track.stop())
+  systemAudioStream = null
+  systemAudioSource = null
+  systemAudioAnalyser = null
+  systemAudioData = null
+  systemAudioContext?.close().catch(() => {})
+  systemAudioContext = null
+  systemAudioStarting = false
+  audioMotionBoost = 1
 }
 
 function applyDanceRotation(name, x, y, z, audioResponsive = true) {
@@ -855,6 +959,7 @@ assetPanel.innerHTML = `
       <span>桌宠管理</span>
       <span data-role="group-mode">本窗口：独舞</span>
     </div>
+    <div class="music-status" data-role="music-status">音乐：等待播放</div>
     <div class="pet-list" data-role="pet-list"></div>
     <div class="pet-manager-actions">
       <button type="button" data-action="create-pet">新增桌宠</button>
@@ -923,6 +1028,13 @@ function updateCurrentDanceMode(mode, leaderPetId) {
 function renderPetManager(state) {
   if (!state) return
   petManagerState = state
+  const wasAudioLeader = currentPetId === audioLeaderPetId
+  audioLeaderPetId = state.audioLeaderId ?? null
+  const isAudioLeader = currentPetId === audioLeaderPetId
+  if (wasAudioLeader && !isAudioLeader) stopSystemAudioAnalysis()
+  if (!wasAudioLeader && isAudioLeader && (spotifyIsPlaying || musicPlayerCandidate)) {
+    scheduleSystemAudioAnalysis()
+  }
   const currentProfile = state.pets.find(({ id }) => id === currentPetId)
   groupCommonDanceKeys = Array.isArray(state.groupCommonDanceKeys)
     ? state.groupCommonDanceKeys
@@ -1447,26 +1559,6 @@ window.addEventListener('keydown', (event) => {
     return
   }
 
-  if (event.code === 'KeyM') {
-    event.preventDefault()
-    if (!event.repeat) {
-      musicDanceMuted = !musicDanceMuted
-      manualDanceOverride = false
-      if (musicDanceMuted || !spotifyIsPlaying || petDanceMode === 'off') {
-        isDancing = false
-        setIdlePose('neutral', 0.3)
-      } else {
-        isDancing = true
-        stopRoaming(false)
-        danceShuffleBag = []
-        nextAutoDanceSelectionAt = 0
-        selectAutomaticDance(animationElapsed)
-      }
-      console.log(`Music dance ${musicDanceMuted ? 'muted; idle enabled' : 'enabled'}`)
-    }
-    return
-  }
-
   if (/^Digit[1-9]$/.test(event.code)) {
     event.preventDefault()
     if (!event.repeat) {
@@ -1596,9 +1688,9 @@ renderer.setAnimationLoop(() => {
     beatPulse = Math.max(0, beatPulse - delta * 6)
     audioAnalysisElapsed += delta
     if (
-      spotifyIsPlaying
+      (spotifyIsPlaying || musicPlayerCandidate)
       && !musicDanceMuted
-      && (petDanceMode === 'solo' || currentPetId === groupLeaderPetId)
+      && currentPetId === audioLeaderPetId
       && systemAudioAnalyser
       && systemAudioData
       && audioAnalysisElapsed >= 1 / 30
@@ -1618,6 +1710,27 @@ renderer.setAnimationLoop(() => {
       const bassLevel = bass / bassBins / 255
       audioMotionBoost = 1 + Math.min(level * 2 + bassLevel * 1.5, 0.9)
 
+      if (musicPlayerCandidate) {
+        const hasMusicEnergy = level > 0.018 || bassLevel > 0.028
+        if (hasMusicEnergy) {
+          musicSilenceStartedAt = -Infinity
+          if (!Number.isFinite(musicEnergyStartedAt)) musicEnergyStartedAt = elapsed
+          if (!detectedMusicPlaying && elapsed - musicEnergyStartedAt >= 1.2) {
+            detectedMusicPlaying = true
+            setMusicPlaying(true, musicPlayerName)
+            updateMusicStatusLabel(`${musicPlayerName}：正在播放`)
+          }
+        } else {
+          musicEnergyStartedAt = -Infinity
+          if (!Number.isFinite(musicSilenceStartedAt)) musicSilenceStartedAt = elapsed
+          if (detectedMusicPlaying && elapsed - musicSilenceStartedAt >= 2.5) {
+            detectedMusicPlaying = false
+            setMusicPlaying(false, musicPlayerName)
+            updateMusicStatusLabel(`${musicPlayerName}：已暂停`)
+          }
+        }
+      }
+
       bassBaseline += (bassLevel - bassBaseline) * 0.05
       const isBeat = (
         bassLevel > bassBaseline * 1.35 + 0.025
@@ -1628,6 +1741,15 @@ renderer.setAnimationLoop(() => {
         const beatInterval = elapsed - lastDetectedBeatAt
         lastDetectedBeatAt = elapsed
         beatPulse = 1
+        musicBeatSerial += 1
+        if (currentMotionRole === 'dance' && currentVrmaAction) {
+          const motionBeatSeconds = 60 / Math.max(currentVrmaReferenceBpm, 1)
+          const phase = THREE.MathUtils.euclideanModulo(currentVrmaAction.time, motionBeatSeconds)
+          const phaseError = phase > motionBeatSeconds / 2
+            ? motionBeatSeconds - phase
+            : -phase
+          currentVrmaAction.time = Math.max(0, currentVrmaAction.time + phaseError * 0.35)
+        }
 
         if (beatInterval >= 0.25 && beatInterval <= 1.2) {
           let detectedBpm = 60 / beatInterval
@@ -1657,6 +1779,16 @@ renderer.setAnimationLoop(() => {
             }
           }
         }
+      }
+
+      if (elapsed - lastMusicAnalysisSentAt >= 0.1 || isBeat) {
+        lastMusicAnalysisSentAt = elapsed
+        window.desktopPet?.publishMusicAnalysis({
+          playing: musicPlayerCandidate ? detectedMusicPlaying : spotifyIsPlaying,
+          bpm: targetBpm,
+          boost: audioMotionBoost,
+          beat: musicBeatSerial,
+        })
       }
     }
 
@@ -1807,6 +1939,24 @@ renderer.setAnimationLoop(() => {
       applyAdditionalRotation('rightUpperLeg', landingWeight * 0.62, 0, 0, 1)
       applyAdditionalRotation('leftLowerLeg', -landingWeight * 1.05, 0, 0, 1)
       applyAdditionalRotation('rightLowerLeg', -landingWeight * 1.05, 0, 0, 1)
+    }
+
+    if (currentMotionRole === 'idle' && idleWeight > 0) {
+      const gentle = 0.5 - Math.cos(elapsed * 0.65) * 0.5
+      if (idleVariant === 'curious') {
+        applyAdditionalRotation('head', 0.025, 0.07, 0.055, idleWeight)
+        applyAdditionalRotation('chest', 0.015, 0.02, -0.02, idleWeight)
+      } else if (idleVariant === 'weight-shift') {
+        const shift = Math.sin(elapsed * 0.55)
+        applyAdditionalRotation('hips', 0, 0, shift * 0.035, idleWeight)
+        applyAdditionalRotation('chest', 0, 0, -shift * 0.02, idleWeight)
+      } else if (idleVariant === 'small-stretch') {
+        applyAdditionalRotation('leftUpperArm', -0.08 * gentle, 0, 0.12 * gentle, idleWeight)
+        applyAdditionalRotation('rightUpperArm', -0.08 * gentle, 0, -0.12 * gentle, idleWeight)
+        applyAdditionalRotation('chest', -0.025 * gentle, 0, 0, idleWeight)
+      } else if (idleVariant === 'look-down') {
+        applyAdditionalRotation('head', 0.07, Math.sin(elapsed * 0.35) * 0.035, 0, idleWeight)
+      }
     }
 
     applyAdditionalRotation('chest', idleBreath * DANCE_CONFIG.idleBreath, 0, 0, idleWeight)
