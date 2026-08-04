@@ -1,4 +1,4 @@
-# macOS desktop pet 3.0.2
+# macOS desktop pet 3.0.5
 
 A transparent, always-on-top macOS desktop pet built with Electron, Vite,
 Three.js, and `@pixiv/three-vrm`.
@@ -12,14 +12,15 @@ files. Users import their own files inside the App.
 - Per-pet VRM and VRMA imports
 - Independent size, roaming, dance, and window state
 - Solo dance and synchronized group dance modes
-- Mouse interaction, dragging, walking, idle motions, and music-responsive dance
+- Mouse interaction, dragging, walking, idle motions, and beat-responsive dance
+- Music detection for Spotify, NetEase Cloud Music, and QQ Music
 - Multi-display window movement
 - Individual asset deletion and complete pet reset
 
 ## Requirements
 
 - macOS 11 or later
-- Apple Silicon Mac for the downloadable v3.0.2 build
+- Apple Silicon Mac for the downloadable v3.0.5 build
 - Node.js and npm only when running from source
 
 ## Run from source
@@ -57,6 +58,16 @@ The App uses VRMA filenames to identify common roles:
 - Other successfully loaded VRMA files — dance motions
 
 Only successfully loaded animations are added to interaction and dance lists.
+
+## Music detection
+
+- Spotify is checked through macOS Automation when permission is available.
+- If Spotify Automation cannot be read, the App falls back to the same local
+  system-audio detection used for NetEase Cloud Music and QQ Music.
+- NetEase Cloud Music and QQ Music use playback-process detection together with
+  local system-audio analysis.
+- Grant Screen & System Audio Recording permission when macOS requests it.
+- Music is analyzed only in memory; it is not recorded, saved, or uploaded.
 
 ## Privacy
 
