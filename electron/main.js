@@ -1,12 +1,16 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { basename, extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, net, protocol, screen, session } from 'electron'
 
+// Electron 37 on macOS needs the legacy loopback path to return a real
+// system-audio track. The newer CoreAudio picker can return video-only here.
 app.commandLine.appendSwitch('disable-features', 'MacCatapLoopbackAudioForScreenShare')
+
 protocol.registerSchemesAsPrivileged([{
   scheme: 'pet-assets',
   privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true },
@@ -17,26 +21,32 @@ if (!hasSingleInstanceLock) app.quit()
 app.on('second-instance', () => {
   const window = BrowserWindow.getAllWindows()[0]
   if (!window) {
-    const profile = petRegistry.pets[0] ?? emptyPetProfile()
-    if (!petRegistry.pets.length) petRegistry.pets.push(profile)
-    profile.enabled = true
-    writePetRegistry()
-    createPetWindow(profile)
+    const profile = petRegistry.pets[0]
+    if (profile) {
+      profile.enabled = true
+      writePetRegistry()
+      createPetWindow(profile)
+    }
     return
   }
   if (window.isMinimized()) window.restore()
-  ensureWindowVisible(window)
+  window.show()
   window.focus()
 })
 
 const VITE_DEV_SERVER_URL = 'http://127.0.0.1:5173'
 const PRELOAD_PATH = fileURLToPath(new URL('./preload.cjs', import.meta.url))
 const RENDERER_PATH = fileURLToPath(new URL('../dist/index.html', import.meta.url))
+const HAS_BUNDLED_ASSETS = !app.isPackaged || existsSync(join(RENDERER_PATH, '..', 'model.vrm'))
 const SPOTIFY_STATE_SCRIPT = [
-  'if application "Spotify" is running then',
-  'tell application "Spotify" to return player state as text',
+  'if application id "com.spotify.client" is running then',
+  'tell application id "com.spotify.client" to return player state as text',
   'end if',
   'return "stopped"',
+]
+const OPTIONAL_MUSIC_PLAYERS = [
+  { name: '网易云音乐', processes: ['NeteaseMusic'] },
+  { name: 'QQ 音乐', processes: ['QQMusic', 'QQMusicMac'] },
 ]
 const roamingWindows = new Map()
 const dragOffsets = new Map()
@@ -58,6 +68,8 @@ let registryWriteQueue = Promise.resolve()
 let spotifyPollTimer = null
 let spotifyPollInFlight = false
 let lastSpotifyState = null
+let lastMusicPlayerStatus = null
+let lastMusicPlayerStatusKey = null
 
 function queueAssetMutation(operation) {
   const result = assetMutationQueue.then(operation, operation)
@@ -77,6 +89,19 @@ function importedAssetsDirectory(petId) {
   return join(petsDirectory(), petId)
 }
 
+function defaultPetProfile() {
+  return {
+    id: DEFAULT_PET_ID,
+    name: HAS_BUNDLED_ASSETS ? '默认桌宠' : '桌宠 1',
+    enabled: true,
+    builtIn: HAS_BUNDLED_ASSETS,
+    sizeLevel: DEFAULT_PET_SIZE,
+    danceMode: 'solo',
+    roamingEnabled: HAS_BUNDLED_ASSETS,
+    bounds: null,
+  }
+}
+
 function emptyPetProfile(index = 0) {
   return {
     id: `pet-${randomUUID()}`,
@@ -88,6 +113,10 @@ function emptyPetProfile(index = 0) {
     roamingEnabled: false,
     bounds: null,
   }
+}
+
+function initialPetProfile() {
+  return HAS_BUNDLED_ASSETS ? defaultPetProfile() : emptyPetProfile()
 }
 
 function sanitizeBounds(bounds) {
@@ -107,27 +136,34 @@ function sanitizeBounds(bounds) {
 }
 
 function sanitizePetProfile(profile, index) {
-  const fallbackId = `pet-${index + 1}`
+  const fallbackId = HAS_BUNDLED_ASSETS && index === 0
+    ? DEFAULT_PET_ID
+    : `pet-${index + 1}`
   const id = typeof profile?.id === 'string' && /^[a-z0-9-]{1,80}$/i.test(profile.id)
     ? profile.id
     : fallbackId
-  const fallbackName = `桌宠 ${index + 1}`
+  const fallbackName = index === 0
+    ? (HAS_BUNDLED_ASSETS ? '默认桌宠' : '桌宠 1')
+    : `桌宠 ${index + 1}`
+  const wasLegacyBuiltIn = profile?.builtIn === true
   return {
     id,
     name: typeof profile?.name === 'string' && profile.name.trim()
       ? profile.name.trim().slice(0, 40)
       : fallbackName,
     enabled: profile?.enabled !== false,
-    builtIn: false,
+    builtIn: HAS_BUNDLED_ASSETS && id === DEFAULT_PET_ID,
     sizeLevel: Number.isInteger(profile?.sizeLevel)
       ? Math.max(0, Math.min(10, profile.sizeLevel))
       : DEFAULT_PET_SIZE,
     danceMode: ['off', 'solo', 'group'].includes(profile?.danceMode)
       ? profile.danceMode
       : 'solo',
-    roamingEnabled: typeof profile?.roamingEnabled === 'boolean'
+    roamingEnabled: !HAS_BUNDLED_ASSETS && wasLegacyBuiltIn
+      ? false
+      : typeof profile?.roamingEnabled === 'boolean'
       ? profile.roamingEnabled
-      : false,
+      : HAS_BUNDLED_ASSETS && id === DEFAULT_PET_ID,
     bounds: sanitizeBounds(profile?.bounds),
   }
 }
@@ -137,7 +173,7 @@ async function readPetRegistry() {
     const saved = JSON.parse(await readFile(registryPath(), 'utf8'))
     const seen = new Set()
     const pets = (Array.isArray(saved.pets) ? saved.pets : [])
-      .filter((profile) => profile?.id !== DEFAULT_PET_ID)
+      .filter((profile) => HAS_BUNDLED_ASSETS || profile?.id !== DEFAULT_PET_ID)
       .slice(0, MAX_PETS)
       .map(sanitizePetProfile)
       .filter((profile) => {
@@ -145,7 +181,10 @@ async function readPetRegistry() {
         seen.add(profile.id)
         return true
       })
-    const restoredPets = pets.length ? pets.slice(0, MAX_PETS) : [emptyPetProfile()]
+    if (HAS_BUNDLED_ASSETS && !pets.some(({ id }) => id === DEFAULT_PET_ID)) {
+      pets.unshift(defaultPetProfile())
+    }
+    const restoredPets = pets.length ? pets.slice(0, MAX_PETS) : [initialPetProfile()]
     if (!restoredPets.some(({ enabled }) => enabled)) restoredPets[0].enabled = true
     return {
       version: 1,
@@ -156,7 +195,7 @@ async function readPetRegistry() {
     return {
       version: 1,
       groupDanceEnabled: false,
-      pets: [emptyPetProfile()],
+      pets: [initialPetProfile()],
     }
   }
 }
@@ -266,20 +305,6 @@ function clampWindowPosition(window, x, y, workArea = null) {
       Math.min(safeY, targetArea.y + targetArea.height - visible.bottom + verticalOverhang),
     )),
   }
-}
-
-function ensureWindowVisible(window, preferredBounds = null) {
-  if (!window || window.isDestroyed()) return
-  const bounds = preferredBounds ?? window.getBounds()
-  const safeX = Math.max(-2147483000, Math.min(2147483000, Math.round(bounds.x)))
-  const safeY = Math.max(-2147483000, Math.min(2147483000, Math.round(bounds.y)))
-  const display = screen.getDisplayNearestPoint({
-    x: safeX + Math.round(bounds.width / 2),
-    y: safeY + Math.round(bounds.height / 2),
-  })
-  const position = clampWindowPosition(window, safeX, safeY, display.workArea)
-  safelySetWindowBounds(window, position.x, position.y)
-  window.show()
 }
 
 function randomRoamingTarget(window) {
@@ -622,11 +647,15 @@ function currentGroupCommonDanceKeys() {
 }
 
 function petManagerState(currentPetId = null) {
+  const audioLeaderId = petRegistry.pets.find(({ id, enabled, danceMode }) => (
+    enabled && danceMode !== 'off' && petWindows.has(id)
+  ))?.id ?? null
   return {
     currentPetId,
     maxPets: MAX_PETS,
     groupLeaderId: currentGroupLeaderId(),
     groupCommonDanceKeys: currentGroupCommonDanceKeys(),
+    audioLeaderId,
     pets: petRegistry.pets.map(({
       id, name, enabled, builtIn, sizeLevel, danceMode, roamingEnabled,
     }) => ({
@@ -790,7 +819,7 @@ ipcMain.handle('pet-delete', async (event, petIds) => {
   if (result.response !== 1) return false
 
   petRegistry.pets = petRegistry.pets.filter(({ id }) => !ids.includes(id))
-  const replacement = petRegistry.pets.length ? null : emptyPetProfile()
+  const replacement = petRegistry.pets.length ? null : initialPetProfile()
   if (replacement) petRegistry.pets.push(replacement)
   await Promise.all(ids.map((id) => rm(importedAssetsDirectory(id), { recursive: true, force: true })))
   await writePetRegistry()
@@ -845,9 +874,10 @@ function getSpotifyPlaybackState(callback) {
   }
 
   const args = SPOTIFY_STATE_SCRIPT.flatMap((line) => ['-e', line])
-  execFile('/usr/bin/osascript', args, (error, stdout) => {
+  execFile('/usr/bin/osascript', args, { timeout: 2500 }, (error, stdout) => {
     if (error) {
-      callback('unavailable', error.message)
+      const denied = error.code === 1 && /-1743|not authorized|not permitted/i.test(error.message)
+      callback(denied ? 'permission-denied' : 'unavailable', error.message)
       return
     }
 
@@ -855,20 +885,105 @@ function getSpotifyPlaybackState(callback) {
   })
 }
 
+function isProcessRunning(processNames, callback) {
+  const names = [...processNames]
+  const checkNext = () => {
+    const name = names.shift()
+    if (!name) return callback(false)
+    execFile('/usr/bin/pgrep', ['-x', name], { timeout: 1000 }, (error) => {
+      if (!error) callback(true)
+      else checkNext()
+    })
+  }
+  checkNext()
+}
+
+function findRunningOptionalMusicPlayer(callback, index = 0) {
+  const player = OPTIONAL_MUSIC_PLAYERS[index]
+  if (!player) return callback(null)
+  isProcessRunning(player.processes, (running) => {
+    if (running) callback(player)
+    else findRunningOptionalMusicPlayer(callback, index + 1)
+  })
+}
+
+function broadcastMusicPlayerStatus(status) {
+  const key = JSON.stringify(status)
+  if (key === lastMusicPlayerStatusKey) return
+  lastMusicPlayerStatusKey = key
+  lastMusicPlayerStatus = status
+  console.log(`Music player status: ${status.player} ${status.state}`)
+  for (const window of petWindows.values()) {
+    if (!window.isDestroyed()) window.webContents.send('music-player-status', status)
+  }
+}
+
 function pollSpotifyPlayback() {
   if (spotifyPollInFlight) return
   spotifyPollInFlight = true
   getSpotifyPlaybackState((state, errorMessage) => {
-    spotifyPollInFlight = false
-    if (state === lastSpotifyState) return
-    lastSpotifyState = state
     if (errorMessage) console.error('Failed to read Spotify playback state:', errorMessage)
-    console.log(`Spotify playback state: ${state}`)
-    for (const window of petWindows.values()) {
-      if (!window.isDestroyed()) window.webContents.send('spotify-playback-state', state)
+    if (state !== lastSpotifyState) {
+      lastSpotifyState = state
+      console.log(`Spotify playback state: ${state}`)
+      for (const window of petWindows.values()) {
+        if (!window.isDestroyed()) window.webContents.send('spotify-playback-state', state)
+      }
     }
+    if (state === 'playing') {
+      broadcastMusicPlayerStatus({ player: 'Spotify', state: 'playing', exact: true })
+      spotifyPollInFlight = false
+      return
+    }
+    const findFallbackPlayer = () => findRunningOptionalMusicPlayer((player) => {
+      if (player) {
+        broadcastMusicPlayerStatus({ player: player.name, state: 'candidate', exact: false })
+      } else {
+        broadcastMusicPlayerStatus({
+          player: 'Spotify',
+          state,
+          exact: true,
+          error: errorMessage || null,
+        })
+      }
+      spotifyPollInFlight = false
+    })
+    if (state === 'permission-denied' || state === 'unavailable') {
+      isProcessRunning(['Spotify'], (spotifyRunning) => {
+        if (spotifyRunning) {
+          broadcastMusicPlayerStatus({
+            player: 'Spotify',
+            state: 'candidate',
+            exact: false,
+            fallback: 'system-audio',
+            error: errorMessage || null,
+          })
+          spotifyPollInFlight = false
+        } else {
+          findFallbackPlayer()
+        }
+      })
+      return
+    }
+    findFallbackPlayer()
   })
 }
+
+ipcMain.on('pet-music-analysis', (event, analysis) => {
+  const petId = petIdForEvent(event)
+  const leaderId = petManagerState().audioLeaderId
+  if (!petId || petId !== leaderId || !analysis || typeof analysis !== 'object') return
+  const payload = {
+    sourcePetId: petId,
+    playing: analysis.playing === true,
+    bpm: Number.isFinite(analysis.bpm) ? Math.max(60, Math.min(180, analysis.bpm)) : 116,
+    boost: Number.isFinite(analysis.boost) ? Math.max(1, Math.min(2, analysis.boost)) : 1,
+    beat: Number.isInteger(analysis.beat) ? analysis.beat : 0,
+  }
+  for (const window of petWindows.values()) {
+    if (!window.isDestroyed()) window.webContents.send('music-analysis', payload)
+  }
+})
 
 function capturePetWindowBounds(petId) {
   const profile = getPetProfile(petId)
@@ -911,7 +1026,7 @@ function createPetWindow(profile) {
   window.setAlwaysOnTop(true, 'floating')
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   if (profile.bounds) {
-    ensureWindowVisible(window, profile.bounds)
+    window.setBounds(profile.bounds, false)
   } else {
     const primaryWorkArea = screen.getPrimaryDisplay().workArea
     const initialBounds = window.getBounds()
@@ -932,9 +1047,9 @@ function createPetWindow(profile) {
     console.log(`[renderer] ${event.message}`)
   })
   window.webContents.on('did-finish-load', () => {
-    ensureWindowVisible(window)
     if (lastSpotifyState === null) pollSpotifyPlayback()
     else window.webContents.send('spotify-playback-state', lastSpotifyState)
+    if (lastMusicPlayerStatus) window.webContents.send('music-player-status', lastMusicPlayerStatus)
     window.webContents.send('pet-manager-state', petManagerState(profile.id))
   })
   window.on('close', () => capturePetWindowBounds(profile.id))
@@ -975,13 +1090,17 @@ app.whenReady().then(() => {
       thumbnailSize: { width: 0, height: 0 },
     }).then((sources) => {
       if (sources.length === 0) {
-        callback({})
+        try { callback({}) } catch (error) {
+          console.error('No screen source is available for system audio capture:', error)
+        }
         return
       }
       callback({ video: sources[0], audio: 'loopback' })
     }).catch((error) => {
       console.error('Failed to select a system audio source:', error)
-      callback({})
+      try { callback({}) } catch (callbackError) {
+        console.error('Could not cancel the failed system audio request:', callbackError)
+      }
     })
   })
 
@@ -992,7 +1111,7 @@ app.whenReady().then(() => {
     petRegistry.pets.filter(({ enabled }) => enabled).forEach(createPetWindow)
   }).catch((error) => {
     console.error('Failed to initialize pet registry:', error)
-    petRegistry = { version: 1, groupDanceEnabled: false, pets: [emptyPetProfile()] }
+    petRegistry = { version: 1, groupDanceEnabled: false, pets: [initialPetProfile()] }
     createPetWindow(petRegistry.pets[0])
   })
   pollSpotifyPlayback()
@@ -1001,11 +1120,11 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     const existing = [...petWindows.values()].find((window) => !window.isDestroyed())
     if (existing) {
-      ensureWindowVisible(existing)
+      existing.show()
       existing.focus()
       return
     }
-    const profile = petRegistry.pets[0] ?? emptyPetProfile()
+    const profile = petRegistry.pets[0] ?? initialPetProfile()
     if (!petRegistry.pets.length) petRegistry.pets.push(profile)
     profile.enabled = true
     writePetRegistry()
